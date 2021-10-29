@@ -1,0 +1,134 @@
+---
+title: "Untitled"
+author: "Yunfei Zhang"
+date: "10/28/2021"
+output:
+  html_document:
+    df_print: paged
+---
+
+Data exploration
+```{r}
+loans_full_schema = read.csv('C:/Users/pc/Desktop/loans_full_schema.csv')
+attach(loans_full_schema)
+head(loans_full_schema)
+table(loans_full_schema$homeownership) # own/mortgage/rent
+table(verified_income) # varified, unverified, source verified
+table(delinq_2y) # #of delinquencies
+table(loan_status)
+
+```
+
+Data cleaning - NA values
+```{r}
+colSums(is.na(loans_full_schema))
+table(application_type)
+library(dplyr)
+#for NA in emp_length, debt_to_income, because there is very few rows with missing values and they are deemed as important variable for predicting interest rate, we choose to omit these values.
+#For several joint variables, NA occurs because they are individual applicants. -- We can focus only on individual applicants first.
+#For months_since_last_delinq, months_since_90d_late, months_since_last_credit_inquiry and num_accounts_120d_past_due, NA's mean people do not have bad credit record, which is a good thing. We already have other columns to reflect the credit record, so we will ignore these columns as well.
+data = loans_full_schema%>% filter(emp_length != 'NA' & debt_to_income != 'NA' & application_type =='individual') %>% select(-months_since_last_delinq, -months_since_90d_late, -months_since_last_credit_inquiry, - num_accounts_120d_past_due, -annual_income_joint, -verification_income_joint, -debt_to_income_joint)
+colSums(is.na(data))
+```
+
+
+Data Cleaning - Remove outliers
+```{r}
+attach(data)
+q1 = quantile(interest_rate, probs = seq(0,1,0.25))[2]
+q3 = quantile(interest_rate, probs = seq(0,1,0.25))[4]
+iqr = q3-q1
+inner_fence = 1.5*iqr
+outer_fence = 3*iqr
+
+inner_fence_le = q1 - inner_fence
+outer_fence_ue = q3 + outer_fence
+
+modeldata = data%>% filter(interest_rate > inner_fence_le & interest_rate <outer_fence_ue)
+outlier = data%>% filter(interest_rate <= inner_fence_le | interest_rate >=outer_fence_ue)
+# all data within feasible range
+
+quantile(interest_rate, probs = seq(0,1,0.025))
+lowest2.5 = quantile(interest_rate, probs = seq(0,1,0.025))[2]
+highest2.5 = quantile(interest_rate, probs = seq(0,1,0.025))[40]
+modeldata = data%>% filter(interest_rate > lowest2.5 & interest_rate <highest2.5)
+outlier = data%>% filter(interest_rate <= lowest2.5 | interest_rate >=highest2.5)
+```
+
+LM for feature selection
+```{r}
+#str(modeldata)
+lm = lm(interest_rate~ grade,data = modeldata)
+summary(lm)
+# R2 is too high, we ignore variable grade and sub-grade. Grade, like interest rate, reflects the estimate of risk in the loan and is assigned by the assessment. We cannot predict y using an equivalence of y.
+```
+
+```{r}
+# try lm
+lm1 = lm(interest_rate~ emp_length + homeownership + annual_income + delinq_2y + inquiries_last_12m + total_credit_utilized/total_credit_limit + num_historical_failed_to_pay + accounts_opened_24m + num_satisfactory_accounts + num_active_debit_accounts + balance + total_debit_limit,data = data)
+summary(lm1) # lm has very poor performance
+```
+
+#change factor variables to dummy
+```{r}
+library(varhandle)
+#state = to.dummy(modeldata$state,'state')
+homeownership = to.dummy(modeldata$homeownership,'homeownership')
+verified_income = to.dummy(modeldata$verified_income,'verified_income')
+loan_purpose = to.dummy(modeldata$loan_purpose,'loan_purpose')
+initial_listing_status = to.dummy(modeldata$initial_listing_status,'initial_listing_status')
+disbursement_method = to.dummy(modeldata$disbursement_method,'disbursement_method')
+modeldata = cbind(modeldata,data.frame(homeownership),data.frame(verified_income),data.frame(loan_purpose),data.frame(initial_listing_status),data.frame(disbursement_method))
+subdata = modeldata %>% select( -homeownership, - verified_income, -earliest_credit_line, -grade, -sub_grade, -loan_purpose, -application_type, -issue_month, -loan_status, -initial_listing_status, -disbursement_method,-paid_interest,-paid_late_fees,-paid_principal, -paid_total)
+```
+
+#Split into train/test set
+```{r}
+set.seed(1)
+train = sample(nrow(subdata), nrow(subdata)*0.7)
+library(randomForest)
+rf = randomForest(interest_rate~. ,data=subdata[train,],mtry=sqrt(55),importance = TRUE)
+rf
+varImpPlot(rf, n.var = 10)
+importance(rf,order = descending)
+yhat.rf = predict(rf,newdata = subdata[-train,])
+
+```
+
+# LASSO
+```{r}
+library(glmnet)
+grid = 10^seq(10,-2,length=10)
+x = model.matrix(interest_rate~. ,data=subdata)[,-1]
+y = subdata$interest_rate
+lasso.mod = glmnet(x[train,],y[train],alpha = 1,lambda = grid)
+
+set.seed(1)
+cv.out = cv.glmnet(x[train,],y[train],alpha=1)
+plot(cv.out)
+
+bestlam = cv.out$lambda.min
+bestlam
+
+lasso.pred=predict(lasso.mod,s=bestlam,newx=x[-train,])
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
